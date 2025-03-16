@@ -1,3 +1,5 @@
+"use client"
+
 import type React from "react"
 import { View, Text, Image, StyleSheet, TouchableOpacity } from "react-native"
 import { useNavigation } from "@react-navigation/native"
@@ -9,18 +11,23 @@ type GameCardProps = {
   game: {
     id: string
     title: string
-    description: string
+    description: string | null
     category: string
     date: string
     location: string
-    image?: string
+    image_url?: string | null
     difficulty: string
     duration: number
-    spotsAvailable: number
-    host: {
-      name: string
-      avatar?: string
-      accountType?: string
+    spots_available: number
+    spots_total: number
+    host_id: string
+    created_at: string
+    updated_at: string
+    host?: {
+      id: string
+      full_name: string
+      avatar_url?: string | null
+      account_type?: string
     }
   }
   compact?: boolean
@@ -58,7 +65,7 @@ const GameCard: React.FC<GameCardProps> = ({ game, compact = false }) => {
       activeOpacity={0.8}
     >
       <Image
-        source={{ uri: game.image || "https://picsum.photos/400/200" }}
+        source={{ uri: game.image_url || "https://picsum.photos/400/200" }}
         style={[styles.image, compact && styles.compactImage]}
         resizeMode="cover"
       />
@@ -67,7 +74,7 @@ const GameCard: React.FC<GameCardProps> = ({ game, compact = false }) => {
         <Text style={styles.categoryText}>{game.category}</Text>
       </View>
 
-      {game.host.accountType === "business" && (
+      {game.host?.account_type === "business" && (
         <View style={styles.officialBadge}>
           <Text style={styles.officialText}>Official Event</Text>
         </View>
@@ -110,7 +117,7 @@ const GameCard: React.FC<GameCardProps> = ({ game, compact = false }) => {
 
               <View style={styles.detailItem}>
                 <Ionicons name="people-outline" size={16} color={colors.muted} />
-                <Text style={[styles.detailText, { color: colors.text }]}>{game.spotsAvailable} spots left</Text>
+                <Text style={[styles.detailText, { color: colors.text }]}>{game.spots_available} spots left</Text>
               </View>
             </>
           )}

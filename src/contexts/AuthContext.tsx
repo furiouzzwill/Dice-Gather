@@ -1,18 +1,17 @@
 "use client"
-import { createContext, useState, useContext, useEffect, type ReactNode } from "react"
-import AsyncStorage from "@react-native-async-storage/async-storage"
-import { Alert } from "react-native"
-import { mockUsers } from "../data/mockData"
 
-// Define User type
+import type React from "react"
+import { createContext, useContext, useState, useEffect } from "react"
+import { supabase, getUserProfile, type Profile } from "../lib/supabase"
+import type { Session, AuthChangeEvent } from "@supabase/supabase-js"
+
+// Add this export at the top of the file, after the imports
 export type User = {
   id: string
-  name: string
-  email: string
-  username: string
+  email?: string | null
+  name?: string
   avatar?: string
   joinedDate?: string
-  bio?: string
   accountType?: "personal" | "business"
   businessInfo?: {
     businessName: string
@@ -24,20 +23,14 @@ export type User = {
       zip: string
     }
   }
-  online?: boolean
   friends?: string[]
   friendRequests?: string[]
-  unlocks?: {
-    [key: string]: {
-      unlocked: boolean
-      selected?: string
-    }
-  }
+  unlocks?: any
 }
 
-// Define AuthContext type
 type AuthContextType = {
   user: User | null
+  profile: Profile | null
   isLoading: boolean
   login: (email: string, password: string) => Promise<{ success: boolean; message: string }>
   signup: (
@@ -58,89 +51,122 @@ type AuthContextType = {
     },
   ) => Promise<{ success: boolean; message: string }>
   logout: () => Promise<void>
-  updateUser: (userData: Partial<User>) => Promise<void>
+  updateUser: (userData: Partial<Profile>) => Promise<void>
+  loginWithMagicLink: (email: string) => Promise<{ success: boolean; message: string }>
+  loginWithProvider: (provider: "google" | "facebook" | "apple") => Promise<{ success: boolean; message?: string }>
 }
 
-// Create context
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-// Define props for AuthProvider
-interface AuthProviderProps {
-  children: ReactNode
-}
-
-// Create AuthProvider component
-export const AuthProvider = ({ children }: AuthProviderProps) => {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
-  // Check if user is logged in on initial load
   useEffect(() => {
-    async function loadUserFromStorage() {
-      try {
-        const userJson = await AsyncStorage.getItem("user")
-        if (userJson) {
-          const parsedUser = JSON.parse(userJson)
+    // Check for active session on mount
+    checkUser()
 
-          // Ensure accountType is either "personal", "business", or undefined
-          if (
-            parsedUser.accountType &&
-            parsedUser.accountType !== "personal" &&
-            parsedUser.accountType !== "business"
-          ) {
-            parsedUser.accountType = undefined
-          }
-
-          setUser(parsedUser as User)
+    // Set up auth state listener
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (event: AuthChangeEvent, session: Session | null) => {
+        if (session?.user) {
+          setUser(session.user)
+          const userProfile = await getUserProfile(session.user.id)
+          setProfile(userProfile)
+        } else {
+          setUser(null)
+          setProfile(null)
         }
-      } catch (error) {
-        console.error("Failed to load user from storage:", error)
-      } finally {
         setIsLoading(false)
-      }
-    }
+      },
+    )
 
-    loadUserFromStorage()
+    return () => {
+      authListener.subscription.unsubscribe()
+    }
   }, [])
 
-  const login = async (email: string, password: string) => {
+  async function checkUser() {
     try {
-      // Simulate API call with mock data
-      const foundUser = mockUsers.find((u) => u.email === email)
+      setIsLoading(true)
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
 
-      if (!foundUser || (foundUser as any).password !== password) {
-        return { success: false, message: "Invalid email or password" }
+      if (session?.user) {
+        setUser(session.user)
+        const userProfile = await getUserProfile(session.user.id)
+        setProfile(userProfile)
       }
-
-      // Remove password from user object and ensure accountType is properly typed
-      const { password: _, ...userWithoutPassword } = foundUser as any
-
-      // Ensure accountType is either "personal", "business", or undefined
-      if (
-        userWithoutPassword.accountType &&
-        userWithoutPassword.accountType !== "personal" &&
-        userWithoutPassword.accountType !== "business"
-      ) {
-        userWithoutPassword.accountType = undefined
-      }
-
-      // Update online status
-      userWithoutPassword.online = true
-
-      // Save user to storage
-      await AsyncStorage.setItem("user", JSON.stringify(userWithoutPassword))
-
-      // Update state
-      setUser(userWithoutPassword as User)
-
-      return { success: true, message: "Login successful" }
     } catch (error) {
-      console.error("Login error:", error)
-      return { success: false, message: "An unexpected error occurred" }
+      console.error("Error checking user:", error)
+    } finally {
+      setIsLoading(false)
     }
   }
 
-  const signup = async (
+  async function login(email: string, password: string) {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (error) throw error
+
+      return { success: true, message: "Logged in successfully!" }
+    } catch (error: any) {
+      return { success: false, message: error.message || "Failed to login" }
+    }
+  }
+
+  // Add a magic link login function for mobile
+  async function loginWithMagicLink(email: string) {
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: "dicegather://login-callback", // Your deep link URL
+        },
+      })
+
+      if (error) throw error
+
+      return {
+        success: true,
+        message: "Check your email for the login link!",
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        message: error.message || "Failed to send magic link",
+      }
+    }
+  }
+
+  // Add OAuth login for mobile
+  async function loginWithProvider(provider: "google" | "facebook" | "apple") {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: "dicegather://login-callback", // Your deep link URL
+        },
+      })
+
+      if (error) throw error
+
+      return { success: true }
+    } catch (error: any) {
+      return {
+        success: false,
+        message: error.message || `Failed to login with ${provider}`,
+      }
+    }
+  }
+
+  async function signup(
     name: string,
     email: string,
     username: string,
@@ -156,104 +182,91 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         zip: string
       }
     },
-  ) => {
+  ) {
     try {
-      // Check if user already exists
-      if (mockUsers.some((u) => u.email === email)) {
-        return { success: false, message: "Email already in use" }
-      }
-
-      if (mockUsers.some((u) => u.username === username)) {
-        return { success: false, message: "Username already taken" }
-      }
-
-      // Create new user
-      const newUser = {
-        id: `user${mockUsers.length + 1}`,
-        name,
+      // Create auth user
+      const { data, error } = await supabase.auth.signUp({
         email,
-        username,
         password,
-        avatar: `https://ui-avatars.com/api/?name=${name.replace(" ", "+")}&background=random`,
-        joinedDate: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-        accountType,
-        ...(accountType === "business" && { businessInfo }),
-        online: true,
-        friends: [] as string[],
-        friendRequests: [] as string[],
+      })
+
+      if (error) throw error
+      if (!data.user) throw new Error("User creation failed")
+
+      // Create profile
+      const profileData: any = {
+        id: data.user.id,
+        username,
+        full_name: name,
+        account_type: accountType,
       }
 
-      // In a real app, you would send this to an API
-      mockUsers.push(newUser as any)
+      // Add business info if provided
+      if (accountType === "business" && businessInfo) {
+        profileData.business_name = businessInfo.businessName
+        profileData.business_type = businessInfo.businessType
 
-      // Remove password from user object for storage
-      const { password: _, ...userWithoutPassword } = newUser
-
-      // Save user to storage
-      await AsyncStorage.setItem("user", JSON.stringify(userWithoutPassword))
-
-      // Update state
-      setUser(userWithoutPassword)
-
-      return { success: true, message: "Signup successful" }
-    } catch (error) {
-      console.error("Signup error:", error)
-      return { success: false, message: "An unexpected error occurred" }
-    }
-  }
-
-  const logout = async () => {
-    try {
-      // Update online status for the current user in mock data
-      if (user) {
-        const userIndex = mockUsers.findIndex((u) => u.id === user.id)
-        if (userIndex !== -1) {
-          mockUsers[userIndex].online = false
+        if (businessInfo.location) {
+          profileData.business_address = businessInfo.location.address
+          profileData.business_city = businessInfo.location.city
+          profileData.business_state = businessInfo.location.state
+          profileData.business_zip = businessInfo.location.zip
         }
       }
 
-      await AsyncStorage.removeItem("user")
-      setUser(null)
-    } catch (error) {
-      console.error("Logout error:", error)
-      Alert.alert("Error", "Failed to log out")
+      const { error: profileError } = await supabase.from("profiles").insert(profileData)
+
+      if (profileError) throw profileError
+
+      return { success: true, message: "Signed up successfully!" }
+    } catch (error: any) {
+      return { success: false, message: error.message || "Failed to sign up" }
     }
   }
 
-  const updateUser = async (userData: Partial<User>) => {
+  async function logout() {
     try {
-      if (!user) return
-
-      const updatedUser = { ...user, ...userData }
-
-      // Update in mock data
-      const userIndex = mockUsers.findIndex((u) => u.id === user.id)
-      if (userIndex !== -1) {
-        Object.assign(mockUsers[userIndex], userData)
-      }
-
-      // Save to storage
-      await AsyncStorage.setItem("user", JSON.stringify(updatedUser))
-
-      // Update state
-      setUser(updatedUser)
+      await supabase.auth.signOut()
+      setUser(null)
+      setProfile(null)
     } catch (error) {
-      console.error("Update user error:", error)
-      Alert.alert("Error", "Failed to update user")
+      console.error("Error logging out:", error)
     }
   }
 
-  return (
-    <AuthContext.Provider value={{ user, isLoading, login, signup, logout, updateUser }}>
-      {children}
-    </AuthContext.Provider>
-  )
+  async function updateUser(userData: Partial<Profile>) {
+    try {
+      if (!user) throw new Error("No user logged in")
+
+      const { error } = await supabase.from("profiles").update(userData).eq("id", user.id)
+
+      if (error) throw error
+
+      // Update local profile state
+      setProfile((prev: Profile | null) => (prev ? { ...prev, ...userData } : null))
+    } catch (error) {
+      console.error("Error updating user:", error)
+    }
+  }
+
+  const value = {
+    user,
+    profile,
+    isLoading,
+    login,
+    loginWithMagicLink,
+    loginWithProvider,
+    signup,
+    logout,
+    updateUser,
+  }
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-// Create hook for using auth
 export const useAuth = () => {
   const context = useContext(AuthContext)
-  if (context === undefined) {
+  if (!context) {
     throw new Error("useAuth must be used within an AuthProvider")
   }
   return context

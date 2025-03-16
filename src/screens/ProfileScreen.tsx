@@ -6,50 +6,26 @@ import { Ionicons } from "@expo/vector-icons"
 import { useTheme } from "../contexts/ThemeContext"
 import { useAuth } from "../contexts/AuthContext"
 import { usePoints } from "../contexts/PointsContext"
-import { getUserAchievements } from "../data/mockData"
-// Define banner images
-const BANNER_IMAGES = {
-  banner1: "https://picsum.photos/id/10/800/200", // Forest
-  banner2: "https://picsum.photos/id/15/800/200", // Mountains
-  banner3: "https://picsum.photos/id/26/800/200", // Beach
-  default: "https://picsum.photos/id/1/800/200", // Default banner
-}
-
-interface ProfileBannerProps {
-  height?: number
-}
-
-const ProfileBanner = ({ height = 120 }: ProfileBannerProps) => {
-  const { colors } = useTheme()
-  const { unlockedFeatures } = usePoints()
-
-  // Check if profile banner feature is unlocked
-  const bannerFeature = unlockedFeatures.profileBanner
-  const isUnlocked = bannerFeature?.unlocked
-  const selectedBanner = bannerFeature?.selected || "default"
-
-  // Get banner image
-  const bannerImage = isUnlocked ? BANNER_IMAGES[selectedBanner as keyof typeof BANNER_IMAGES] : BANNER_IMAGES.default
-
-  return (
-    <View style={[styles.bannerContainer, { height, backgroundColor: colors.muted + "30" }]}>
-      <Image source={{ uri: bannerImage }} style={styles.bannerImage} resizeMode="cover" />
-    </View>
-  )
-}
+import ProfileBanner from "../components/ProfileBanner"
 
 const ProfileScreen = () => {
   const navigation = useNavigation() as any
   const { colors, toggleTheme, theme } = useTheme()
-  const { user, logout } = useAuth()
+  const { user, profile, logout } = useAuth()
   const { points, level, levelTitle, progress, unlockedFeatures } = usePoints()
 
-  // Get user achievements for the profile summary
-  const achievements = user ? getUserAchievements(user.id) : []
-  const unlockedCount = achievements.filter((a) => a.unlocked).length
+  // Check if profile exists
+  if (!profile) {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <Text style={[styles.title, { color: colors.text }]}>Loading profile...</Text>
+      </View>
+    )
+  }
 
   const handleLogout = async () => {
     await logout()
+    // Update this navigation reset to ensure it goes to the correct Login screen
     navigation.reset({
       index: 0,
       routes: [{ name: "Login" }],
@@ -64,7 +40,6 @@ const ProfileScreen = () => {
     navigation.navigate("Achievements")
   }
 
-  // Find the navigateToCustomize function and make sure it's using the correct screen name
   const navigateToCustomize = () => {
     navigation.navigate("CustomizeProfile")
   }
@@ -108,7 +83,6 @@ const ProfileScreen = () => {
         </TouchableOpacity>
       </View>
 
-      {/* Profile Banner */}
       <ProfileBanner />
 
       <View style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -116,18 +90,18 @@ const ProfileScreen = () => {
           <View style={styles.avatarContainer}>
             {hasAvatarFrame && frameColor ? (
               <View style={[styles.avatarFrame, { borderColor: frameColor }]}>
-                <Image source={{ uri: user.avatar }} style={styles.avatar} />
+                <Image source={{ uri: profile.avatar_url || "https://via.placeholder.com/80" }} style={styles.avatar} />
               </View>
             ) : (
-              <Image source={{ uri: user.avatar }} style={styles.avatar} />
+              <Image source={{ uri: profile.avatar_url || "https://via.placeholder.com/80" }} style={styles.avatar} />
             )}
           </View>
 
           <View style={styles.profileInfo}>
-            <Text style={[styles.name, { color: colors.text }]}>{user.name}</Text>
-            <Text style={[styles.username, { color: colors.muted }]}>@{user.username}</Text>
+            <Text style={[styles.name, { color: colors.text }]}>{profile.full_name}</Text>
+            <Text style={[styles.username, { color: colors.muted }]}>@{profile.username}</Text>
 
-            {user.accountType === "business" && (
+            {profile.account_type === "business" && (
               <View style={[styles.businessBadge, { backgroundColor: colors.primary + "20" }]}>
                 <Text style={[styles.businessBadgeText, { color: colors.primary }]}>Business Account</Text>
               </View>
@@ -147,7 +121,11 @@ const ProfileScreen = () => {
 
           <View style={[styles.detailItem, { borderBottomColor: colors.border }]}>
             <Text style={[styles.detailLabel, { color: colors.muted }]}>Member since</Text>
-            <Text style={[styles.detailValue, { color: colors.text }]}>{user.joinedDate || "Not available"}</Text>
+            <Text style={[styles.detailValue, { color: colors.text }]}>
+              {profile.created_at
+                ? new Date(profile.created_at).toLocaleDateString("en-US", { month: "long", year: "numeric" })
+                : "Not available"}
+            </Text>
           </View>
 
           <View style={[styles.detailItem, { borderBottomColor: colors.border }]}>
@@ -185,7 +163,7 @@ const ProfileScreen = () => {
 
         <View style={styles.achievementStats}>
           <View style={styles.achievementStat}>
-            <Text style={[styles.achievementStatValue, { color: colors.primary }]}>{unlockedCount}</Text>
+            <Text style={[styles.achievementStatValue, { color: colors.primary }]}>0</Text>
             <Text style={[styles.achievementStatLabel, { color: colors.muted }]}>Unlocked</Text>
           </View>
 
@@ -364,6 +342,7 @@ const styles = StyleSheet.create({
   logoutButtonText: {
     fontSize: 14,
     fontWeight: "600",
+    color: "#ffffff",
   },
   achievementsCard: {
     borderRadius: 12,
@@ -459,15 +438,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#ffffff",
-  },
-  bannerContainer: {
-    width: "100%",
-    overflow: "hidden",
-    borderRadius: 12,
-  },
-  bannerImage: {
-    width: "100%",
-    height: "100%",
   },
 })
 

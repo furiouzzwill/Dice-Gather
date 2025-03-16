@@ -12,6 +12,7 @@ import {
   Platform,
   ActivityIndicator,
   SafeAreaView,
+  Image,
 } from "react-native"
 import { useRoute, useNavigation } from "@react-navigation/native"
 import { Ionicons } from "@expo/vector-icons"
@@ -32,6 +33,8 @@ interface Message {
 const generateMessageId = () => `msg${Date.now()}${Math.floor(Math.random() * 1000)}`
 
 const ChatScreen = () => {
+  // Update the route parameter handling at the beginning of the component:
+
   const route = useRoute() as any
   const navigation = useNavigation() as any
   const { colors } = useTheme()
@@ -42,7 +45,8 @@ const ChatScreen = () => {
   const [newMessage, setNewMessage] = useState("")
   const [isLoading, setIsLoading] = useState(true)
 
-  const { userId } = route.params
+  // Get userId from route params, if it exists
+  const userId = route.params ? route.params.userId : undefined
   const flatListRef = useRef<FlatList>(null)
 
   // Define Hinge-like colors
@@ -58,25 +62,30 @@ const ChatScreen = () => {
     timeText: "#8E8E93",
   }
 
+  // Update the useEffect to handle both cases:
+
   useEffect(() => {
     const loadChatData = () => {
       setIsLoading(true)
 
-      // Get receiver info
-      const receiverData = getUserById(userId)
-      if (receiverData) {
-        // Use type assertion to ensure the accountType is properly typed
-        const typedReceiver: User = {
-          ...receiverData,
-          accountType: receiverData.accountType as "personal" | "business" | undefined,
+      // If userId is provided, load the specific chat
+      if (userId) {
+        // Get receiver info
+        const receiverData = getUserById(userId)
+        if (receiverData) {
+          // Use type assertion to ensure the accountType is properly typed
+          const typedReceiver: User = {
+            ...receiverData,
+            accountType: receiverData.accountType as "personal" | "business" | undefined,
+          }
+          setReceiver(typedReceiver)
         }
-        setReceiver(typedReceiver)
-      }
 
-      // Get conversation
-      if (user) {
-        const conversation = getConversation(user.id, userId)
-        setMessages(conversation)
+        // Get conversation
+        if (user) {
+          const conversation = getConversation(user.id, userId)
+          setMessages(conversation)
+        }
       }
 
       setIsLoading(false)
@@ -84,6 +93,90 @@ const ChatScreen = () => {
 
     loadChatData()
   }, [userId, user])
+
+  // Add a function to get all conversations:
+
+  // Function to get all conversations
+  const getConversations = () => {
+    if (!user) return []
+
+    // Get all unique users the current user has chatted with
+    const chatPartners = new Set<string>()
+    mockMessages.forEach((msg) => {
+      if (msg.senderId === user.id) {
+        chatPartners.add(msg.receiverId)
+      } else if (msg.receiverId === user.id) {
+        chatPartners.add(msg.senderId)
+      }
+    })
+
+    // For each chat partner, get the most recent message
+    const conversations = Array.from(chatPartners)
+      .map((partnerId) => {
+        const partnerMessages = mockMessages
+          .filter(
+            (msg) =>
+              (msg.senderId === user.id && msg.receiverId === partnerId) ||
+              (msg.receiverId === user.id && msg.senderId === partnerId),
+          )
+          .sort((a, b) => b.timestamp - a.timestamp)
+
+        const lastMessage = partnerMessages[0]
+        const partner = getUserById(partnerId)
+
+        return {
+          userId: partnerId,
+          name: partner?.name || "Unknown User",
+          avatar: partner?.avatar || "https://via.placeholder.com/50",
+          lastMessage: lastMessage.content,
+          timestamp: lastMessage.timestamp,
+          unread: !lastMessage.read && lastMessage.receiverId === user.id,
+        }
+      })
+      .sort((a, b) => b.timestamp - a.timestamp)
+
+    return conversations
+  }
+
+  // Add a function to render conversation items:
+
+  // Function to render a conversation item
+  const renderConversationItem = ({ item }: { item: any }) => (
+    <TouchableOpacity
+      style={[styles.conversationItem, { backgroundColor: colors.card, borderColor: colors.border }]}
+      onPress={() => navigation.navigate("Chat", { userId: item.userId })}
+    >
+      <View style={styles.avatarContainer}>
+        <Image source={{ uri: item.avatar }} style={styles.avatar} />
+      </View>
+
+      <View style={styles.conversationInfo}>
+        <View style={styles.conversationHeader}>
+          <Text style={[styles.conversationName, { color: colors.text }]}>{item.name}</Text>
+          <Text style={[styles.conversationTime, { color: colors.muted }]}>{formatTime(item.timestamp)}</Text>
+        </View>
+
+        <View style={styles.messagePreview}>
+          <Text
+            style={[
+              styles.messagePreviewText,
+              { color: item.unread ? colors.text : colors.muted },
+              item.unread && styles.unreadMessage,
+            ]}
+            numberOfLines={1}
+          >
+            {item.lastMessage}
+          </Text>
+
+          {item.unread && (
+            <View style={[styles.unreadBadge, { backgroundColor: colors.primary }]}>
+              <Text style={styles.unreadBadgeText}>New</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </TouchableOpacity>
+  )
 
   const sendMessage = () => {
     if (!newMessage.trim() || !user || !receiver) return
@@ -179,17 +272,51 @@ const ChatScreen = () => {
     </View>
   )
 
+  // Update the render method to handle both cases:
+
+  // If no userId is provided, show the conversation list
+  if (!userId) {
+    const conversations = getConversations()
+
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.header}>
+          <Text style={[styles.title, { color: colors.text }]}>Messages</Text>
+        </View>
+
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+          </View>
+        ) : conversations.length > 0 ? (
+          <FlatList
+            data={conversations}
+            renderItem={renderConversationItem}
+            keyExtractor={(item) => item.userId}
+            contentContainerStyle={styles.conversationsList}
+          />
+        ) : (
+          <View style={styles.emptyState}>
+            <Ionicons name="chatbubbles-outline" size={48} color={colors.muted} />
+            <Text style={[styles.emptyText, { color: colors.muted }]}>No messages yet</Text>
+            <Text style={[styles.emptySubtext, { color: colors.muted }]}>Start a conversation with your friends</Text>
+          </View>
+        )}
+      </View>
+    )
+  }
+
   if (isLoading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: hingeColors.background }]}>
+      <SafeAreaView style={[styles.loadingContainer, { backgroundColor: hingeColors.background }]}>
         <ActivityIndicator size="large" color={hingeColors.primary} />
-      </View>
+      </SafeAreaView>
     )
   }
 
   if (!receiver) {
     return (
-      <View style={[styles.errorContainer, { backgroundColor: hingeColors.background }]}>
+      <SafeAreaView style={[styles.errorContainer, { backgroundColor: hingeColors.background }]}>
         <Ionicons name="alert-circle-outline" size={48} color={colors.error} />
         <Text style={[styles.errorTitle, { color: colors.text }]}>User Not Found</Text>
         <TouchableOpacity
@@ -198,11 +325,12 @@ const ChatScreen = () => {
         >
           <Text style={styles.backButtonText}>Go Back</Text>
         </TouchableOpacity>
-      </View>
+      </SafeAreaView>
     )
   }
 
   const groupedMessages = groupMessagesByDate()
+  const userName = receiver?.name || "Unknown User"
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: hingeColors.background }]}>
@@ -213,6 +341,7 @@ const ChatScreen = () => {
       >
         <View style={[styles.container, { backgroundColor: hingeColors.background }]}>
           {/* Hinge-style header */}
+          {/* Update the header to show the user's name */}
           <View style={[styles.header, { backgroundColor: hingeColors.headerBackground }]}>
             <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
               <Ionicons name="chevron-back" size={28} color={hingeColors.primary} />
@@ -220,9 +349,9 @@ const ChatScreen = () => {
 
             <TouchableOpacity
               style={styles.userInfo}
-              onPress={() => navigation.navigate("UserProfile", { userId: receiver.id })}
+              onPress={() => navigation.navigate("UserProfile", { userId: receiver?.id })}
             >
-              <Text style={styles.userName}>{receiver.name}</Text>
+              <Text style={styles.userName}>{userName}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.headerAction}>
@@ -438,6 +567,86 @@ const styles = StyleSheet.create({
   inputAction: {
     marginLeft: 8,
     padding: 4,
+  },
+  // Add these new styles
+  conversationItem: {
+    flexDirection: "row",
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+  },
+  avatarContainer: {
+    position: "relative",
+  },
+  avatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+  },
+  conversationInfo: {
+    flex: 1,
+    marginLeft: 12,
+    justifyContent: "center",
+  },
+  conversationHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  conversationName: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  conversationTime: {
+    fontSize: 12,
+  },
+  messagePreview: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  messagePreviewText: {
+    fontSize: 14,
+    flex: 1,
+  },
+  unreadMessage: {
+    fontWeight: "600",
+  },
+  unreadBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 8,
+  },
+  unreadBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  conversationsList: {
+    paddingBottom: 16,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: "bold",
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: "600",
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    textAlign: "center",
   },
 })
 

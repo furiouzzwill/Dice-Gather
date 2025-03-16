@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
-import { View, Text, StyleSheet, FlatList, TouchableOpacity } from "react-native"
+import { useState, useEffect } from "react"
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
 import { useNavigation } from "@react-navigation/native"
 import { useTheme } from "../contexts/ThemeContext"
-import { mockGames } from "../data/mockData"
+import { supabase } from "../lib/supabase"
+import type { Game } from "../types"
 import GameCard from "../components/GameCard"
 import Input from "../components/Input"
 import { useAuth } from "../contexts/AuthContext"
@@ -13,11 +14,35 @@ import { useAuth } from "../contexts/AuthContext"
 type FilterOption = "all" | "upcoming" | "available"
 
 const GamesScreen = () => {
-  const [searchQuery, setSearchQuery] = useState("")
-  const [filterOption, setFilterOption] = useState<FilterOption>("all")
   const { colors } = useTheme()
   const { user } = useAuth()
   const navigation = useNavigation() as any
+
+  const [games, setGames] = useState<Game[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [filterOption, setFilterOption] = useState<FilterOption>("all")
+
+  useEffect(() => {
+    fetchGames()
+  }, [])
+
+  // Update the fetchGames function to properly join the host profile information
+  const fetchGames = async () => {
+    try {
+      setIsLoading(true)
+      const { data, error } = await supabase.from("games").select("*, host:profiles!host_id(*)")
+
+      if (error) throw error
+      if (data) {
+        setGames(data)
+      }
+    } catch (error) {
+      console.error("Error fetching games:", error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   // Update the handleHostGame function to remove business account check
   const handleHostGame = () => {
@@ -25,16 +50,18 @@ const GamesScreen = () => {
     navigation.navigate("HostGame")
   }
 
-  const filteredGames = mockGames.filter((game) => {
+  const filteredGames = games.filter((game) => {
     const matchesSearch =
       game.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      game.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (game.description && game.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
       game.location.toLowerCase().includes(searchQuery.toLowerCase())
 
+    const now = new Date()
+
     if (filterOption === "upcoming") {
-      return matchesSearch && new Date(game.date) > new Date()
+      return matchesSearch && new Date(game.date) > now
     } else if (filterOption === "available") {
-      return matchesSearch && game.spotsAvailable > 0
+      return matchesSearch && game.spots_available > 0 && new Date(game.date) > now
     } else {
       return matchesSearch
     }
@@ -90,7 +117,12 @@ const GamesScreen = () => {
         {renderFilterButton("available", "Available Spots", "people-outline")}
       </View>
 
-      {filteredGames.length === 0 ? (
+      {isLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={[styles.loadingText, { color: colors.muted }]}>Loading games...</Text>
+        </View>
+      ) : filteredGames.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="search" size={48} color={colors.muted} />
           <Text style={[styles.emptyTitle, { color: colors.text }]}>No games found</Text>
@@ -182,6 +214,16 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
   },
 })
 

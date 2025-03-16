@@ -2,7 +2,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react"
 import { Alert } from "react-native"
 import { useAuth } from "./AuthContext"
-import { mockUsers, getUserById } from "../data/mockData"
+import { supabase } from "../lib/supabase"
 import type { User } from "./AuthContext"
 
 // Define FriendsContext type
@@ -14,9 +14,9 @@ type FriendsContextType = {
   acceptFriendRequest: (userId: string) => Promise<boolean>
   declineFriendRequest: (userId: string) => Promise<boolean>
   removeFriend: (userId: string) => Promise<boolean>
-  isFriend: (userId: string) => boolean
-  hasSentFriendRequest: (userId: string) => boolean
-  hasReceivedFriendRequest: (userId: string) => boolean
+  isFriend: (userId: string) => Promise<boolean>
+  hasSentFriendRequest: (userId: string) => Promise<boolean>
+  hasReceivedFriendRequest: (userId: string) => Promise<boolean>
   refreshFriends: () => void
 }
 
@@ -30,13 +30,13 @@ interface FriendsProviderProps {
 
 // Create FriendsProvider component
 export const FriendsProvider = ({ children }: FriendsProviderProps) => {
-  const { user, updateUser } = useAuth()
+  const { user } = useAuth()
   const [friends, setFriends] = useState<User[]>([])
   const [friendRequests, setFriendRequests] = useState<User[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   // Load friends and friend requests
-  const loadFriendsData = () => {
+  const loadFriendsData = async () => {
     if (!user) {
       setFriends([])
       setFriendRequests([])
@@ -45,21 +45,47 @@ export const FriendsProvider = ({ children }: FriendsProviderProps) => {
     }
 
     try {
-      // Get friends
-      const userFriends = user.friends || []
-      const friendsData = userFriends
-        .map((friendId) => getUserById(friendId))
-        .filter((friend) => friend !== undefined) as User[]
+      setIsLoading(true)
 
-      setFriends(friendsData)
+      // Get accepted friends
+      const { data: friendsData, error: friendsError } = await supabase
+        .from("friends")
+        .select(`*, profile:profiles!friend_id(*)`)
+        .eq("user_id", user.id)
+        .eq("status", "accepted")
+
+      if (friendsError) throw friendsError
 
       // Get friend requests
-      const userFriendRequests = user.friendRequests || []
-      const requestsData = userFriendRequests
-        .map((requesterId) => getUserById(requesterId))
-        .filter((requester) => requester !== undefined) as User[]
+      const { data: requestsData, error: requestsError } = await supabase
+        .from("friends")
+        .select(`*, profile:profiles!user_id(*)`)
+        .eq("friend_id", user.id)
+        .eq("status", "pending")
 
-      setFriendRequests(requestsData)
+      if (requestsError) throw requestsError
+
+      // Convert to User type
+      const friendUsers =
+        friendsData?.map((friend) => ({
+          id: friend.friend_id,
+          name: friend.profile.full_name,
+          email: friend.profile.email,
+          avatar: friend.profile.avatar_url,
+          // Add other fields as needed
+        })) || []
+
+      const requestUsers =
+        requestsData?.map((request) => ({
+          id: request.user_id,
+          name: request.profile.full_name,
+          email: request.profile.email,
+          avatar: request.profile.avatar_url,
+          // Add other fields as needed
+        })) || []
+
+      setFriends(friendUsers)
+      setFriendRequests(requestUsers)
     } catch (error) {
       console.error("Failed to load friends data:", error)
     } finally {
@@ -79,34 +105,45 @@ export const FriendsProvider = ({ children }: FriendsProviderProps) => {
     try {
       if (!user) return false
 
-      // Find the user to send request to
-      const targetUser = getUserById(userId)
-      if (!targetUser) return false
-
       // Check if already friends
-      if (user.friends?.includes(userId)) {
+      const { data: existingFriend, error: existingFriendError } = await supabase
+        .from("friends")
+        .select("*")
+        .or(`and(user_id.eq.${user.id},friend_id.eq.${userId}),and(user_id.eq.${userId},friend_id.eq.${user.id})`)
+        .eq("status", "accepted")
+        .maybeSingle()
+
+      if (existingFriendError) throw existingFriendError
+
+      if (existingFriend) {
         Alert.alert("Already Friends", "You are already friends with this user.")
         return false
       }
 
       // Check if request already sent
-      if (targetUser.friendRequests?.includes(user.id)) {
+      const { data: existingRequest, error: existingRequestError } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("friend_id", userId)
+        .eq("status", "pending")
+        .maybeSingle()
+
+      if (existingRequestError) throw existingRequestError
+
+      if (existingRequest) {
         Alert.alert("Request Pending", "You have already sent a friend request to this user.")
         return false
       }
 
-      // Update target user's friend requests
-      const targetIndex = mockUsers.findIndex((u) => u.id === userId)
-      if (targetIndex === -1) return false
+      // Send friend request
+      const { error } = await supabase.from("friends").insert({
+        user_id: user.id,
+        friend_id: userId,
+        status: "pending",
+      })
 
-      // Use type assertion to fix the error
-      const targetUserInMock = mockUsers[targetIndex]
-
-      if (!targetUserInMock.friendRequests) {
-        targetUserInMock.friendRequests = [] as string[]
-      }
-      // Now TypeScript knows it's a string array
-      ;(targetUserInMock.friendRequests as string[]).push(user.id)
+      if (error) throw error
 
       Alert.alert("Success", "Friend request sent successfully.")
       return true
@@ -121,34 +158,31 @@ export const FriendsProvider = ({ children }: FriendsProviderProps) => {
     try {
       if (!user) return false
 
-      // Check if request exists
-      if (!user.friendRequests?.includes(userId)) {
+      // Find the friend request
+      const { data: friendRequest, error: findError } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("friend_id", user.id)
+        .eq("status", "pending")
+        .single()
+
+      if (findError) {
         Alert.alert("No Request", "No friend request found from this user.")
         return false
       }
 
-      // Update current user
-      const updatedFriendRequests = user.friendRequests.filter((id) => id !== userId)
-      const updatedFriends = [...(user.friends || []), userId]
+      // Update the friend request status
+      const { error: updateError } = await supabase
+        .from("friends")
+        .update({ status: "accepted" })
+        .eq("id", friendRequest.id)
 
-      await updateUser({
-        friendRequests: updatedFriendRequests,
-        friends: updatedFriends,
-      })
+      if (updateError) throw updateError
 
-      // Update the other user
-      const otherUserIndex = mockUsers.findIndex((u) => u.id === userId)
-      if (otherUserIndex !== -1) {
-        const otherUser = mockUsers[otherUserIndex]
-
-        if (!otherUser.friends) {
-          otherUser.friends = [] as string[]
-        }
-        // Now TypeScript knows it's a string array
-        ;(otherUser.friends as string[]).push(user.id)
-      }
-
+      // Refresh friends list
       refreshFriends()
+
       Alert.alert("Success", "Friend request accepted.")
       return true
     } catch (error) {
@@ -162,20 +196,28 @@ export const FriendsProvider = ({ children }: FriendsProviderProps) => {
     try {
       if (!user) return false
 
-      // Check if request exists
-      if (!user.friendRequests?.includes(userId)) {
+      // Find the friend request
+      const { data: friendRequest, error: findError } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("friend_id", user.id)
+        .eq("status", "pending")
+        .single()
+
+      if (findError) {
         Alert.alert("No Request", "No friend request found from this user.")
         return false
       }
 
-      // Update current user
-      const updatedFriendRequests = user.friendRequests.filter((id) => id !== userId)
+      // Delete the friend request
+      const { error: deleteError } = await supabase.from("friends").delete().eq("id", friendRequest.id)
 
-      await updateUser({
-        friendRequests: updatedFriendRequests,
-      })
+      if (deleteError) throw deleteError
 
+      // Refresh friends list
       refreshFriends()
+
       Alert.alert("Success", "Friend request declined.")
       return true
     } catch (error) {
@@ -189,27 +231,27 @@ export const FriendsProvider = ({ children }: FriendsProviderProps) => {
     try {
       if (!user) return false
 
-      // Check if they are friends
-      if (!user.friends?.includes(userId)) {
+      // Find the friendship
+      const { data: friendship, error: findError } = await supabase
+        .from("friends")
+        .select("*")
+        .or(`and(user_id.eq.${user.id},friend_id.eq.${userId}),and(user_id.eq.${userId},friend_id.eq.${user.id})`)
+        .eq("status", "accepted")
+        .single()
+
+      if (findError) {
         Alert.alert("Not Friends", "You are not friends with this user.")
         return false
       }
 
-      // Update current user
-      const updatedFriends = user.friends.filter((id) => id !== userId)
+      // Delete the friendship
+      const { error: deleteError } = await supabase.from("friends").delete().eq("id", friendship.id)
 
-      await updateUser({
-        friends: updatedFriends,
-      })
+      if (deleteError) throw deleteError
 
-      // Update the other user
-      const otherUserIndex = mockUsers.findIndex((u) => u.id === userId)
-      if (otherUserIndex !== -1 && mockUsers[otherUserIndex].friends) {
-        const otherUserFriends = mockUsers[otherUserIndex].friends as string[]
-        mockUsers[otherUserIndex].friends = otherUserFriends.filter((id) => id !== user.id)
-      }
-
+      // Refresh friends list
       refreshFriends()
+
       Alert.alert("Success", "Friend removed successfully.")
       return true
     } catch (error) {
@@ -219,17 +261,66 @@ export const FriendsProvider = ({ children }: FriendsProviderProps) => {
     }
   }
 
-  const isFriend = (userId: string): boolean => {
-    return user?.friends?.includes(userId) || false
+  const isFriend = async (userId: string): Promise<boolean> => {
+    if (!user) return false
+
+    try {
+      const { data, error } = await supabase
+        .from("friends")
+        .select("*")
+        .or(`and(user_id.eq.${user.id},friend_id.eq.${userId}),and(user_id.eq.${userId},friend_id.eq.${user.id})`)
+        .eq("status", "accepted")
+        .maybeSingle()
+
+      if (error) throw error
+
+      return !!data
+    } catch (error) {
+      console.error("Check friend status error:", error)
+      return false
+    }
   }
 
-  const hasSentFriendRequest = (userId: string): boolean => {
-    const targetUser = getUserById(userId)
-    return targetUser?.friendRequests?.includes(user?.id || "") || false
+  const hasSentFriendRequest = async (userId: string): Promise<boolean> => {
+    if (!user) return false
+
+    try {
+      const { data, error } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("friend_id", userId)
+        .eq("status", "pending")
+        .maybeSingle()
+
+      if (error) throw error
+
+      return !!data
+    } catch (error) {
+      console.error("Check sent request error:", error)
+      return false
+    }
   }
 
-  const hasReceivedFriendRequest = (userId: string): boolean => {
-    return user?.friendRequests?.includes(userId) || false
+  const hasReceivedFriendRequest = async (userId: string): Promise<boolean> => {
+    if (!user) return false
+
+    try {
+      const { data, error } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("friend_id", user.id)
+        .eq("status", "pending")
+        .maybeSingle()
+
+      if (error) throw error
+
+      return !!data
+    } catch (error) {
+      console.error("Check received request error:", error)
+      return false
+    }
   }
 
   return (

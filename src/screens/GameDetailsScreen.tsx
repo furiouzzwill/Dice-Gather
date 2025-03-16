@@ -5,7 +5,14 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Alert } fr
 import { useRoute, useNavigation } from "@react-navigation/native"
 import { Ionicons } from "@expo/vector-icons"
 import { useTheme } from "../contexts/ThemeContext"
-import { mockGames } from "../data/mockData"
+// Remove this line:
+// import { mockGames } from "../data/mockData"
+// Add these imports:
+import { supabase } from "../lib/supabase"
+// Remove this line:
+// import { useUser } from "../contexts/UserContext"
+// Add this import:
+import { useAuth } from "../contexts/AuthContext"
 import type { GameDetailsRouteProp, StackNavigationProps } from "../types/navigation"
 
 const GameDetailsScreen = () => {
@@ -13,21 +20,45 @@ const GameDetailsScreen = () => {
   const route = useRoute() as any as GameDetailsRouteProp
   const navigation = useNavigation() as any as StackNavigationProps
   const { colors } = useTheme()
+  // Change this line:
+  // const { user } = useUser()
+  // To this:
+  const { user } = useAuth()
   const [game, setGame] = useState<any>(null)
   const [reserving, setReserving] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
   const { gameId } = route.params
 
+  // Replace the useEffect with this:
   useEffect(() => {
-    // Find the game by ID
-    const foundGame = mockGames.find((g) => g.id === gameId)
-    if (foundGame) {
-      setGame(foundGame)
-    } else {
-      // Handle game not found
-      Alert.alert("Error", "Game not found")
+    fetchGameDetails()
+  }, [gameId])
+
+  const fetchGameDetails = async () => {
+    try {
+      setIsLoading(true)
+      const { data, error } = await supabase
+        .from("games")
+        .select("*, host:profiles!host_id(*)")
+        .eq("id", gameId)
+        .single()
+
+      if (error) throw error
+      if (data) {
+        setGame(data)
+      } else {
+        // Handle game not found
+        Alert.alert("Error", "Game not found")
+        navigation.goBack()
+      }
+    } catch (error) {
+      console.error("Error fetching game details:", error)
+      Alert.alert("Error", "Failed to load game details")
       navigation.goBack()
+    } finally {
+      setIsLoading(false)
     }
-  }, [gameId, navigation])
+  }
 
   if (!game) {
     return null
@@ -50,19 +81,55 @@ const GameDetailsScreen = () => {
     })
   }
 
-  const handleReserve = () => {
+  // Update the handleReserve function to use Supabase:
+  const handleReserve = async () => {
+    if (!user || !game) return
+
     setReserving(true)
 
-    // Simulate API call
-    setTimeout(() => {
-      setReserving(false)
+    try {
+      // First, create a reservation
+      const { error: reservationError } = await supabase.from("reservations").insert({
+        game_id: game.id,
+        user_id: user.id,
+        status: "confirmed",
+      })
+
+      if (reservationError) throw reservationError
+
+      // Then, update the spots available
+      const { error: updateError } = await supabase
+        .from("games")
+        .update({
+          spots_available: game.spots_available - 1,
+        })
+        .eq("id", game.id)
+
+      if (updateError) throw updateError
+
+      // Update local state
+      setGame({
+        ...game,
+        spots_available: game.spots_available - 1,
+      })
+
       Alert.alert("Success", "Spot reserved successfully!")
-    }, 1500)
+    } catch (error) {
+      console.error("Error reserving spot:", error)
+      Alert.alert("Error", "Failed to reserve spot")
+    } finally {
+      setReserving(false)
+    }
   }
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
-      <Image source={{ uri: game.image || "https://picsum.photos/400/200" }} style={styles.image} resizeMode="cover" />
+      {/* Update the image source in the render section: */}
+      <Image
+        source={{ uri: game.image_url || "https://picsum.photos/400/200" }}
+        style={styles.image}
+        resizeMode="cover"
+      />
 
       <View style={styles.content}>
         <View style={styles.header}>
@@ -119,7 +186,7 @@ const GameDetailsScreen = () => {
             <Ionicons name="people-outline" size={20} color={colors.muted} />
             <View style={styles.detailContent}>
               <Text style={[styles.detailLabel, { color: colors.text }]}>Spots Available</Text>
-              <Text style={[styles.detailText, { color: colors.muted }]}>{game.spotsAvailable} spots left</Text>
+              <Text style={[styles.detailText, { color: colors.muted }]}>{game.spots_available} spots left</Text>
             </View>
           </View>
         </View>
@@ -127,11 +194,20 @@ const GameDetailsScreen = () => {
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Host</Text>
           <View style={styles.hostContainer}>
-            <Image source={{ uri: game.host.avatar }} style={styles.hostAvatar} />
+            {/* Update the host avatar source: */}
+            <Image
+              source={{ uri: game.host.avatar_url || "https://via.placeholder.com/48" }}
+              style={styles.hostAvatar}
+            />
             <View style={styles.hostInfo}>
-              <Text style={[styles.hostName, { color: colors.text }]}>{game.host.name}</Text>
-              {game.host.since && (
-                <Text style={[styles.hostSince, { color: colors.muted }]}>Hosting since {game.host.since}</Text>
+              {/* Update the host name reference: */}
+              <Text style={[styles.hostName, { color: colors.text }]}>{game.host.full_name}</Text>
+              {/* Update the host since reference (if it exists in your database): */}
+              {game.host.created_at && (
+                <Text style={[styles.hostSince, { color: colors.muted }]}>
+                  Hosting since{" "}
+                  {new Date(game.host.created_at).toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                </Text>
               )}
             </View>
           </View>
@@ -141,14 +217,14 @@ const GameDetailsScreen = () => {
           style={[
             styles.reserveButton,
             {
-              backgroundColor: game.spotsAvailable === 0 || reserving ? colors.muted : colors.primary,
+              backgroundColor: game.spots_available === 0 || reserving ? colors.muted : colors.primary,
             },
           ]}
           onPress={handleReserve}
-          disabled={game.spotsAvailable === 0 || reserving}
+          disabled={game.spots_available === 0 || reserving}
         >
           <Text style={styles.reserveButtonText}>
-            {reserving ? "Reserving..." : game.spotsAvailable === 0 ? "No spots available" : "Reserve your spot"}
+            {reserving ? "Reserving..." : game.spots_available === 0 ? "No spots available" : "Reserve your spot"}
           </Text>
         </TouchableOpacity>
       </View>

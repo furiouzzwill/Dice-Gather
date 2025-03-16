@@ -2,60 +2,222 @@
 
 import { useState, useEffect } from "react"
 import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator } from "react-native"
-import { useRoute, useNavigation } from "@react-navigation/native"
 import { Ionicons } from "@expo/vector-icons"
+import { useNavigation, useRoute } from "@react-navigation/native"
 import { useTheme } from "../contexts/ThemeContext"
-import { useFriends } from "../contexts/FriendsContext"
-import { getUserById, mockGames } from "../data/mockData"
-import type { User } from "../contexts/AuthContext"
-import GameCard from "../components/GameCard"
+import { useAuth } from "../contexts/AuthContext"
+import { supabase } from "../lib/supabase"
+import type { Profile, Game } from "../types"
+
+type RouteParams = {
+  userId: string
+}
 
 const UserProfileScreen = () => {
-  const route = useRoute() as any
+  const route = useRoute()
+  const { userId } = route.params as RouteParams
   const navigation = useNavigation() as any
   const { colors } = useTheme()
-  const {
-    sendFriendRequest,
-    acceptFriendRequest,
-    removeFriend,
-    isFriend,
-    hasSentFriendRequest,
-    hasReceivedFriendRequest,
-  } = useFriends()
-
-  const [user, setUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const { userId } = route.params
+  const { user } = useAuth()
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [friendStatus, setFriendStatus] = useState<"none" | "pending" | "accepted" | "received">("none")
+  const [friendId, setFriendId] = useState<string | null>(null)
+  const [hostedGames, setHostedGames] = useState<Game[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const fetchUser = () => {
-      setIsLoading(true)
-      // In a real app, you would make an API call
-      const foundUser = getUserById(userId)
-      if (foundUser) {
-        // Use type assertion to ensure the accountType is properly typed
-        const typedUser: User = {
-          ...foundUser,
-          accountType: foundUser.accountType as "personal" | "business" | undefined,
-        }
-        setUser(typedUser)
-      }
-      setIsLoading(false)
+    if (userId) {
+      fetchUserProfile()
+      fetchFriendStatus()
+      fetchHostedGames()
     }
-
-    fetchUser()
   }, [userId])
 
-  // Get user's hosted games
-  const userGames = mockGames.filter((game) => game.host.name === user?.name).slice(0, 2)
+  const fetchUserProfile = async () => {
+    try {
+      setLoading(true)
+      const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).single()
 
-  const navigateToChat = () => {
-    if (user) {
-      navigation.navigate("Chat", { userId: user.id })
+      if (error) throw error
+      if (data) {
+        setProfile(data)
+      }
+    } catch (error) {
+      console.error("Error fetching user profile:", error)
+    } finally {
+      setLoading(false)
     }
   }
 
-  if (isLoading) {
+  const fetchFriendStatus = async () => {
+    if (!user) return
+
+    try {
+      // Check if user has sent a friend request
+      const { data: sentRequest, error: sentError } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("friend_id", userId)
+        .single()
+
+      if (sentError && sentError.code !== "PGRST116") {
+        throw sentError
+      }
+
+      if (sentRequest) {
+        setFriendStatus(sentRequest.status)
+        setFriendId(sentRequest.id)
+        return
+      }
+
+      // Check if user has received a friend request
+      const { data: receivedRequest, error: receivedError } = await supabase
+        .from("friends")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("friend_id", user.id)
+        .single()
+
+      if (receivedError && receivedError.code !== "PGRST116") {
+        throw receivedError
+      }
+
+      if (receivedRequest) {
+        setFriendStatus(receivedRequest.status === "pending" ? "received" : receivedRequest.status)
+        setFriendId(receivedRequest.id)
+        return
+      }
+
+      setFriendStatus("none")
+      setFriendId(null)
+    } catch (error) {
+      console.error("Error fetching friend status:", error)
+    }
+  }
+
+  const fetchHostedGames = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("games")
+        .select("*")
+        .eq("host_id", userId)
+        .gte("date", new Date().toISOString())
+        .order("date", { ascending: true })
+        .limit(3)
+
+      if (error) throw error
+      if (data) {
+        setHostedGames(data)
+      }
+    } catch (error) {
+      console.error("Error fetching hosted games:", error)
+    }
+  }
+
+  const sendFriendRequest = async () => {
+    if (!user) return
+
+    try {
+      const { error } = await supabase.from("friends").insert({
+        user_id: user.id,
+        friend_id: userId,
+        status: "pending",
+      })
+
+      if (error) throw error
+
+      setFriendStatus("pending")
+      fetchFriendStatus() // Refresh to get the friend ID
+    } catch (error) {
+      console.error("Error sending friend request:", error)
+    }
+  }
+
+  const acceptFriendRequest = async () => {
+    if (!friendId) return
+
+    try {
+      const { error } = await supabase.from("friends").update({ status: "accepted" }).eq("id", friendId)
+
+      if (error) throw error
+
+      setFriendStatus("accepted")
+    } catch (error) {
+      console.error("Error accepting friend request:", error)
+    }
+  }
+
+  const removeFriend = async () => {
+    if (!friendId) return
+
+    try {
+      const { error } = await supabase.from("friends").delete().eq("id", friendId)
+
+      if (error) throw error
+
+      setFriendStatus("none")
+      setFriendId(null)
+    } catch (error) {
+      console.error("Error removing friend:", error)
+    }
+  }
+
+  const renderFriendButton = () => {
+    if (friendStatus === "none") {
+      return (
+        <TouchableOpacity
+          style={[styles.friendButton, { backgroundColor: colors.primary }]}
+          onPress={sendFriendRequest}
+        >
+          <Ionicons name="person-add-outline" size={18} color="#FFFFFF" />
+          <Text style={styles.friendButtonText}>Add Friend</Text>
+        </TouchableOpacity>
+      )
+    } else if (friendStatus === "pending") {
+      return (
+        <TouchableOpacity
+          style={[styles.friendButton, { backgroundColor: colors.muted + "40" }]}
+          onPress={removeFriend}
+        >
+          <Ionicons name="time-outline" size={18} color={colors.muted} />
+          <Text style={[styles.friendButtonText, { color: colors.muted }]}>Request Sent</Text>
+        </TouchableOpacity>
+      )
+    } else if (friendStatus === "received") {
+      return (
+        <View style={styles.friendButtonsRow}>
+          <TouchableOpacity
+            style={[styles.friendButton, { backgroundColor: colors.primary, flex: 1 }]}
+            onPress={acceptFriendRequest}
+          >
+            <Ionicons name="checkmark-outline" size={18} color="#FFFFFF" />
+            <Text style={styles.friendButtonText}>Accept</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.friendButton, { backgroundColor: colors.muted + "40", flex: 1, marginLeft: 8 }]}
+            onPress={removeFriend}
+          >
+            <Ionicons name="close-outline" size={18} color={colors.muted} />
+            <Text style={[styles.friendButtonText, { color: colors.muted }]}>Decline</Text>
+          </TouchableOpacity>
+        </View>
+      )
+    } else if (friendStatus === "accepted") {
+      return (
+        <TouchableOpacity
+          style={[styles.friendButton, { backgroundColor: colors.muted + "40" }]}
+          onPress={removeFriend}
+        >
+          <Ionicons name="person-outline" size={18} color={colors.muted} />
+          <Text style={[styles.friendButtonText, { color: colors.muted }]}>Friends</Text>
+        </TouchableOpacity>
+      )
+    }
+    return null
+  }
+
+  if (loading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -63,125 +225,74 @@ const UserProfileScreen = () => {
     )
   }
 
-  if (!user) {
+  if (!profile) {
     return (
-      <View style={[styles.errorContainer, { backgroundColor: colors.background }]}>
-        <Ionicons name="alert-circle-outline" size={48} color={colors.error} />
-        <Text style={[styles.errorTitle, { color: colors.text }]}>User Not Found</Text>
-        <TouchableOpacity
-          style={[styles.backButton, { backgroundColor: colors.primary }]}
-          onPress={() => navigation.goBack()}
-        >
-          <Text style={styles.backButtonText}>Go Back</Text>
-        </TouchableOpacity>
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={[styles.title, { color: colors.text }]}>Profile</Text>
+        </View>
+        <View style={styles.errorContainer}>
+          <Ionicons name="alert-circle-outline" size={48} color={colors.muted} />
+          <Text style={[styles.errorText, { color: colors.muted }]}>User not found</Text>
+        </View>
       </View>
     )
   }
 
-  const isAlreadyFriend = isFriend(user.id)
-  const hasPendingRequest = hasSentFriendRequest(user.id)
-  const hasRequest = hasReceivedFriendRequest(user.id)
-
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Profile</Text>
+        <Text style={[styles.title, { color: colors.text }]}>Profile</Text>
       </View>
 
-      <View style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <View style={styles.profileHeader}>
-          <Image source={{ uri: user.avatar }} style={styles.avatar} />
-          <View style={styles.profileInfo}>
-            <Text style={[styles.name, { color: colors.text }]}>{user.name}</Text>
-            <Text style={[styles.username, { color: colors.muted }]}>@{user.username}</Text>
+      <View style={styles.profileHeader}>
+        <Image source={{ uri: profile.avatar_url || "https://via.placeholder.com/100" }} style={styles.profileImage} />
+        <Text style={[styles.profileName, { color: colors.text }]}>{profile.full_name}</Text>
+        <Text style={[styles.profileUsername, { color: colors.muted }]}>@{profile.username}</Text>
 
-            {user.accountType === "business" && (
-              <View style={[styles.businessBadge, { backgroundColor: colors.primary + "20" }]}>
-                <Text style={[styles.businessBadgeText, { color: colors.primary }]}>Business Account</Text>
+        {user?.id !== userId && renderFriendButton()}
+      </View>
+
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>About</Text>
+        <Text style={[styles.aboutText, { color: colors.text }]}>
+          {profile.bio || "This user hasn't added a bio yet."}
+        </Text>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Upcoming Hosted Games</Text>
+        {hostedGames.length > 0 ? (
+          hostedGames.map((game) => (
+            <TouchableOpacity
+              key={game.id}
+              style={[styles.gameCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+              onPress={() => navigation.navigate("GameDetails", { gameId: game.id })}
+            >
+              <View style={styles.gameInfo}>
+                <Text style={[styles.gameTitle, { color: colors.text }]}>{game.title}</Text>
+                <Text style={[styles.gameDate, { color: colors.muted }]}>
+                  {new Date(game.date).toLocaleDateString()} at{" "}
+                  {new Date(game.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </Text>
+                <View style={styles.gameFooter}>
+                  <Text style={[styles.gameSpots, { color: colors.text }]}>
+                    {game.spots_available} / {game.spots_total} spots
+                  </Text>
+                </View>
               </View>
-            )}
-          </View>
-          <View style={[styles.statusIndicator, { backgroundColor: user.online ? "#4ade80" : colors.muted }]} />
-        </View>
-
-        <View style={styles.profileDetails}>
-          {user.joinedDate && (
-            <View style={[styles.detailItem, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.detailLabel, { color: colors.muted }]}>Member since</Text>
-              <Text style={[styles.detailValue, { color: colors.text }]}>{user.joinedDate}</Text>
-            </View>
-          )}
-
-          {user.accountType === "business" && user.businessInfo && (
-            <View style={[styles.detailItem, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.detailLabel, { color: colors.muted }]}>Business</Text>
-              <Text style={[styles.detailValue, { color: colors.text }]}>{user.businessInfo.businessName}</Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.actionButtons}>
-          {isAlreadyFriend ? (
-            <>
-              <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: colors.primary }]}
-                onPress={navigateToChat}
-              >
-                <Ionicons name="chatbubble-outline" size={16} color="#ffffff" />
-                <Text style={styles.actionButtonText}>Message</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: colors.error }]}
-                onPress={() => removeFriend(user.id)}
-              >
-                <Ionicons name="person-remove-outline" size={16} color="#ffffff" />
-                <Text style={styles.actionButtonText}>Remove Friend</Text>
-              </TouchableOpacity>
-            </>
-          ) : hasRequest ? (
-            <TouchableOpacity
-              style={[styles.actionButton, { backgroundColor: colors.primary, flex: 1 }]}
-              onPress={() => acceptFriendRequest(user.id)}
-            >
-              <Ionicons name="checkmark-outline" size={16} color="#ffffff" />
-              <Text style={styles.actionButtonText}>Accept Friend Request</Text>
             </TouchableOpacity>
-          ) : hasPendingRequest ? (
-            <View style={[styles.actionButton, { backgroundColor: colors.secondary, flex: 1 }]}>
-              <Text style={[styles.actionButtonText, { color: colors.muted }]}>Friend Request Sent</Text>
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={[styles.actionButton, { backgroundColor: colors.primary, flex: 1 }]}
-              onPress={() => sendFriendRequest(user.id)}
-            >
-              <Ionicons name="person-add-outline" size={16} color="#ffffff" />
-              <Text style={styles.actionButtonText}>Add Friend</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+          ))
+        ) : (
+          <Text style={[styles.emptyText, { color: colors.muted }]}>This user isn't hosting any upcoming games.</Text>
+        )}
       </View>
-
-      {userGames.length > 0 && (
-        <View style={styles.gamesSection}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Hosted Games</Text>
-          {userGames.map((game) => (
-            <GameCard key={game.id} game={game} />
-          ))}
-          {userGames.length > 2 && (
-            <TouchableOpacity
-              style={[styles.moreButton, { borderColor: colors.border }]}
-              onPress={() => navigation.navigate("Games", { host: user.name })}
-            >
-              <Text style={[styles.moreButtonText, { color: colors.primary }]}>See all games</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
     </ScrollView>
   )
 }
@@ -189,20 +300,6 @@ const UserProfileScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 16,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 40,
-    marginBottom: 16,
-  },
-  backBtn: {
-    marginRight: 12,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
   },
   loadingContainer: {
     flex: 1,
@@ -213,118 +310,110 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    padding: 16,
+    padding: 20,
   },
-  errorTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    marginTop: 16,
-    marginBottom: 16,
+  errorText: {
+    fontSize: 16,
+    marginTop: 12,
+    textAlign: "center",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingTop: 40,
+    paddingBottom: 16,
   },
   backButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 8,
+    marginRight: 16,
   },
-  backButtonText: {
-    color: "#ffffff",
-    fontWeight: "600",
-  },
-  profileCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 16,
-    marginBottom: 16,
+  title: {
+    fontSize: 24,
+    fontWeight: "bold",
   },
   profileHeader: {
-    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+  },
+  profileImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
     marginBottom: 16,
   },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-  },
-  profileInfo: {
-    marginLeft: 16,
-    justifyContent: "center",
-    flex: 1,
-  },
-  name: {
-    fontSize: 18,
+  profileName: {
+    fontSize: 24,
     fontWeight: "bold",
     marginBottom: 4,
   },
-  username: {
-    fontSize: 14,
-    marginBottom: 4,
-  },
-  businessBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-    alignSelf: "flex-start",
-  },
-  businessBadgeText: {
-    fontSize: 10,
-    fontWeight: "500",
-  },
-  statusIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  profileDetails: {
+  profileUsername: {
+    fontSize: 16,
     marginBottom: 16,
   },
-  detailItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  detailLabel: {
-    fontSize: 14,
-  },
-  detailValue: {
-    fontSize: 14,
-    fontWeight: "500",
-  },
-  actionButtons: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  actionButton: {
+  friendButton: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 10,
-    borderRadius: 8,
-    marginHorizontal: 4,
-    flex: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginTop: 8,
   },
-  actionButtonText: {
-    color: "#ffffff",
+  friendButtonsRow: {
+    flexDirection: "row",
+    marginTop: 8,
+  },
+  friendButtonText: {
+    color: "#FFFFFF",
     fontWeight: "600",
     marginLeft: 8,
   },
-  gamesSection: {
-    marginBottom: 16,
+  section: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#CCCCCC",
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "600",
     marginBottom: 12,
   },
-  moreButton: {
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
+  aboutText: {
+    fontSize: 16,
+    lineHeight: 24,
   },
-  moreButtonText: {
+  gameCard: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+  },
+  gameInfo: {
+    flex: 1,
+  },
+  gameTitle: {
+    fontSize: 18,
     fontWeight: "600",
+    marginBottom: 4,
+  },
+  gameDate: {
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  gameFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  gameSpots: {
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  emptyText: {
+    fontSize: 16,
+    textAlign: "center",
+    marginVertical: 16,
   },
 })
 
